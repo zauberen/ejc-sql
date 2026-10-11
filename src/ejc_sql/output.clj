@@ -114,6 +114,45 @@
   [val]
   (reset! column-width-limit val))
 
+(def ^:dynamic *hide-empty-columns*
+  "Remove columns where every value is null or blank from `SELECT *`
+  result sets. Bound per query from `ejc-hide-empty-columns'."
+  false)
+
+(def select-star-re
+  "Match SELECT queries whose columns list contains only `*` or `alias.*`."
+  (re-pattern
+   (str "(?is)^\\s*SELECT\\s+(DISTINCT\\s+)?(TOP\\s+\\d+\\s+)?"
+        "([^\\s,]+\\.)?\\*(\\s*,\\s*([^\\s,]+\\.)?\\*)*"
+        "\\s+FROM\\b.*")))
+
+(defn select-star?
+  "Return true if `sql` is a `SELECT *` (or `SELECT alias.*`) query."
+  [sql]
+  (boolean (and sql (re-matches select-star-re sql))))
+
+(defn blank-value?
+  "Return true if result set cell `v` is null or a blank string."
+  [v]
+  (or (nil? v)
+      (and (string? v) (s/blank? v))))
+
+(defn remove-empty-columns
+  "Remove columns where all values are null or blank from result set `rows`.
+  The first row of `rows` is the header. Return `rows` unchanged if there are
+  no data rows or every column is empty."
+  [rows]
+  (let [[headers & data] rows]
+    (if (empty? data)
+      rows
+      (let [keep-idx (filterv
+                      (fn [i] (not (every? #(blank-value? (nth % i)) data)))
+                      (range (count headers)))]
+        (if (or (empty? keep-idx)
+                (= (count keep-idx) (count headers)))
+          rows
+          (mapv (fn [row] (mapv #(nth row %) keep-idx)) rows))))))
+
 (defn rotate-table
   "Rotate result set to show fields list vertically.
   Applied to single-record result set.

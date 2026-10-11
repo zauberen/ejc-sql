@@ -85,6 +85,14 @@
   :group 'ejc-sql
   :type 'integer)
 
+(defcustom ejc-hide-empty-columns nil
+  "When t remove columns where every value is NULL or blank from results.
+Applied only to `SELECT *' queries (including `SELECT t.*' and
+`SELECT a.*, b.*'), so the explicitly listed columns are always shown."
+  :type 'boolean
+  :safe #'booleanp
+  :group 'ejc-sql)
+
 (defcustom ejc-org-mode-babel-wrapper t
   "Add wrapper around org-mode default `org-babel-execute:sql'."
   :type 'boolean
@@ -804,7 +812,10 @@ brackets is a symbol under point (cursor). Return a list of two items:
       (ejc--eval-sql-and-log-print
        (or db ejc-db)
        prepared-sql
-       :start-time (current-time)
+       ;; A float, not a Lisp timestamp: it makes a round-trip through
+       ;; the Clojure side, and clomacs can't pass a (TICKS . HZ) pair,
+       ;; which `current-time' returns when `current-time-list' is nil.
+       :start-time (float-time)
        :rows-limit rows-limit
        :fetch-size fetch-size
        :column-width-limit column-width-limit
@@ -813,7 +824,8 @@ brackets is a symbol under point (cursor). Return a list of two items:
        :display-result display-result
        :result-file (or result-file
                         (ejc-next-result-file-path))
-       :add-outside-borders (ejc-add-outside-borders-p)))))
+       :add-outside-borders (ejc-add-outside-borders-p)
+       :hide-empty-columns ejc-hide-empty-columns))))
 
 ;;;###autoload
 (defun ejc-eval-user-sql-region (beg end)

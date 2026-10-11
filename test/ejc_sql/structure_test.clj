@@ -34,7 +34,10 @@
              (str "jdbc:sqlserver://localhost\\\\instance:1433;"
                   "databaseName=my_db_name;"
                   "user=a_user;"
-                  "password=secret;")})))))
+                  "password=secret;")})))
+    (is (= :undefined-user
+           (get-user
+            {:connection-uri "jdbc:sqlite:/home/user/test.sqlite"})))))
 
 (deftest get-db-type-test
   (testing "get-db-type fn test."
@@ -122,3 +125,20 @@
     (is (= nil
            (update-sql?
             "SELECT * FROM product")))))
+
+(deftest from-tables-test
+  (testing "from-tables fn test."
+    (is (= ["product"]
+           (from-tables "SELECT name FROM product WHERE id = 1")))
+    (is (= ["product" "category"]
+           (from-tables "SELECT  FROM product p, category c WHERE p.c = c.id")))
+    (is (= ["product" "category" "price"]
+           (from-tables (str "SELECT name\n"
+                             "FROM public.product AS p\n"
+                             "  JOIN category c ON c.id = p.category_id\n"
+                             "  LEFT JOIN \"price\" pr ON pr.id = p.id\n"
+                             "ORDER BY name"))))
+    (is (= ["users"]
+           (from-tables "SELECT  FROM (SELECT * FROM t) x JOIN users u ON 1=1")))
+    (is (= []
+           (from-tables "INSERT INTO product (name) VALUES ('socks')")))))

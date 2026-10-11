@@ -243,9 +243,16 @@ breaks are handled."
                                                  :max-rows rows-limit
                                                  :fetch-size fetch-size)
                       _ (doall
-                         (for [[result-type result] result-list]
+                         (for [[[result-type result] sql-part]
+                               (map vector result-list sql-parts)]
                            (if (= result-type :result-set)
-                             (o/print-table result fetch-size)
+                             (o/print-table
+                              (if (and o/*hide-empty-columns*
+                                       (o/select-star?
+                                        (s/replace sql-part comments-re "")))
+                                (o/remove-empty-columns result)
+                                result)
+                              fetch-size)
                              (println result))))]
                   result-list)]
     (complete
@@ -283,7 +290,8 @@ breaks are handled."
                     sync
                     display-result
                     result-file
-                    add-outside-borders]
+                    add-outside-borders
+                    hide-empty-columns]
              :or {append false
                   sync false
                   display-result true
@@ -293,6 +301,7 @@ breaks are handled."
               (with-open [out (io/writer result-file)]
                 (binding [*out* out
                           o/*add-outside-borders* add-outside-borders
+                          o/*hide-empty-columns* (boolean hide-empty-columns)
                           *max-column-width* (or column-width-limit
                                                  @o/column-width-limit)]
                   (eval-user-sql db sql

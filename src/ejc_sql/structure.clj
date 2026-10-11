@@ -535,17 +535,20 @@
    (:user db)
    (let [{:keys [user connection-uri]} db]
      (or user
-         (if connection-uri
-           (second (.split
-                    (let [props-list (.split connection-uri ";")]
-                      (first
-                       (filter
-                        (fn [prop]
-                          (=
-                           "user"
-                           (.toLowerCase (first (.split prop "=")))))
-                        props-list))) "="))
-           :undefined-user)))))
+         ;; The connection URI may have no `user=` property at all,
+         ;; e.g. "jdbc:sqlite:/path/to/db.sqlite".
+         (when connection-uri
+           (some-> (let [props-list (.split connection-uri ";")]
+                     (first
+                      (filter
+                       (fn [prop]
+                         (=
+                          "user"
+                          (.toLowerCase (first (.split prop "=")))))
+                       props-list)))
+                   (.split "=")
+                   second))
+         :undefined-user))))
 
 (def product-assoc {"oracle:sid" "oracle"})
 
@@ -786,7 +789,10 @@
                          :path [:keywords]
                          :direct-value (when (vector? keywords-query)
                                          keywords-query)
-                         :sql (select-db-meta-script db :keywords)
+                         ;; Some databases (e.g. SQLite) have a static
+                         ;; keywords list instead of a query to obtain it.
+                         :sql (when (fn? keywords-query)
+                                (select-db-meta-script db :keywords))
                          :force? force?
                          :filter-fn #(not (nil? %)))))
 
@@ -926,6 +932,44 @@
   [sql]
   (nth (re-find select-re sql) 2))
 
+(def from-clause-re
+  "Match the tables list of a FROM clause, up to the next clause keyword."
+  (re-pattern
+   (str "(?is)\\bFROM\\s+(.+?)"
+        "(?=\\b(?:WHERE|GROUP|ORDER|HAVING|LIMIT|OFFSET|FETCH|UNION|"
+        "EXCEPT|INTERSECT|JOIN|INNER|LEFT|RIGHT|FULL|CROSS|NATURAL|"
+        "OUTER|ON|USING|WINDOW|SET)\\b|[;)]|$)")))
+
+(def join-re
+  (re-pattern "(?i)\\bJOIN\\s+([^\\s,();]+)"))
+
+(defn- unqualify-table
+  "Remove owner/schema prefix and quotes from `table` name,
+  e.g. `\"public\".\"users\"` -> `users`."
+  [table]
+  (-> table
+      (s/split #"\.")
+      last
+      (s/replace #"[\"`\[\]]" "")))
+
+(defn from-tables
+  "Return a list of table names used in FROM and JOIN clauses of `sql`.
+  Subqueries are skipped and owner/schema prefixes are removed."
+  [sql]
+  (let [sql (clean-sql sql)
+        from-tables (mapcat
+                     (fn [[_ tables-list]]
+                       (map #(first (s/split (s/trim %) #"\s+"))
+                            (s/split tables-list #",")))
+                     (re-seq from-clause-re sql))
+        join-tables (map second (re-seq join-re sql))]
+    (->> (concat from-tables join-tables)
+         (filter #(and (not-empty %)
+                       (not (s/starts-with? % "("))))
+         (map unqualify-table)
+         (filter not-empty)
+         distinct)))
+
 (def insert-re
   (re-pattern (str "(?i)\\s*INSERT\\s+INTO\\s+(\\S+)\\s+")))
 
@@ -990,22 +1034,24 @@
       (autocomplete-loading)
       ;; Tables list loaded:
       (if (not prefix-1)
-        (let [insert-or-update-table (or (select-sql? sql)
-                                         (insert-sql? sql)
-                                         (update-sql? sql))]
-          (cond
-            (and (not-empty insert-or-update-table)
-                 (in? tables-list insert-or-update-table
-                      :case-sensitive false))
-            ;; SELECT # FROM table
+        (let [query-tables (filter
+                            #(in? tables-list % :case-sensitive false)
+                            (distinct
+                             (concat (from-tables sql)
+                                     (keep not-empty
+                                           [(insert-sql? sql)
+                                            (update-sql? sql)]))))]
+          (if (not-empty query-tables)
+            ;; SELECT # FROM table1, table2 JOIN table3
             ;; or
             ;; INSERT INTO table (field1, .#) values (123, 'text')
             ;; or
             ;; UPDATE table SET field1 = 123, .# = 'text' WHERE id = 1
             (autocomplete-result
-             (get-colomns db insert-or-update-table true))
-            ;; SELECT or other queries types
-            :else (autocomplete-nothing)))
+             (distinct
+              (mapcat #(get-colomns db % true) query-tables)))
+            ;; Other queries types
+            (autocomplete-nothing)))
         (if (in? tables-list prefix-1 :case-sensitive false)
           ;; table.#<colomns-list>
           (let [table prefix-1

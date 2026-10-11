@@ -32,9 +32,11 @@
 ;; than once per `ejc-capf-cache-update-ivl-secs'.
 
 ;; The columns candidates depend on the SQL expression around the point
-;; (`alias.|'), hence they can't be collected in advance.  They are requested
-;; synchronously, but only once per completion session: the result is reused
-;; while the user is typing the column name.
+;; (`alias.|', or the tables of the FROM clause when there is no alias and
+;; `ejc-capf-complete-tables-without-alias' is enabled), hence they can't
+;; be collected in advance.  They are requested synchronously, but only
+;; once per completion session: the result is reused while the user is
+;; typing the column name.
 
 ;;; Code:
 
@@ -50,6 +52,16 @@ If set to 1.0e+INF, do not update cache after initialization."
 Used when the database structure cache is not ready yet on the Clojure
 side, so the cached candidates are known to be incomplete."
   :type 'number :group 'ejc-sql)
+
+(defcustom ejc-capf-complete-tables-without-alias nil
+  "When t complete columns of the queried tables even without an alias.
+Without a prefix (no `alias.') offer the columns of all the tables in the
+FROM and JOIN clauses of the SQL expression at point.  It requires a
+synchronous database round-trip, once per completed word.  When nil the
+columns are completed only after `alias.' or `table.'."
+  :type 'boolean
+  :safe #'booleanp
+  :group 'ejc-sql)
 
 (defcustom ejc-capf-idle-timer-secs 1
   "Collect candidates after specified amount of idleness in seconds."
@@ -77,6 +89,10 @@ The scheduling is done with `run-with-idle-timer'.")
 
 (defvar-local ejc-capf--dot-cache nil
   "Cached dot completion candidates: (KEY EXPIRATION-TIME . CANDIDATES).
+See `ejc-capf--dot-cache-key'.")
+
+(defvar-local ejc-capf--columns-cache nil
+  "Cached FROM clause columns candidates: (KEY EXPIRATION-TIME . CANDIDATES).
 See `ejc-capf--dot-cache-key'.")
 
 (defun ejc-capf--propertize (category candidates)
@@ -184,17 +200,40 @@ the request is synchronous, but its result is cached, see
                               candidates)))
         candidates))))
 
+(defun ejc-capf--columns-candidates (beg)
+  "Return the columns of the tables used in the SQL expression at point.
+Used when the word starting at BEG has no prefix (no `alias.'), so the
+columns of all the tables in the FROM and JOIN clauses are returned.  Like
+the dot completion candidates the request is synchronous, but its result is
+cached, see `ejc-capf--dot-cache-key'."
+  (let ((key (ejc-capf--dot-cache-key beg)))
+    (if (and ejc-capf--columns-cache
+             (equal key (car ejc-capf--columns-cache))
+             (< (float-time) (cadr ejc-capf--columns-cache)))
+        (cddr ejc-capf--columns-cache)
+      (let* ((ejc-candidates-pending nil)
+             (candidates (ejc-capf--propertize "column"
+                                               (ejc-colomns-candidates))))
+        (setq ejc-capf--columns-cache
+              (cons key (cons (ejc-capf--expiration-time ejc-candidates-pending)
+                              candidates)))
+        candidates))))
+
 (defun ejc-capf--candidates (beg)
   "Return the completion candidates for the word starting at BEG.
 Unfiltered - the filtering is up to the `completion-styles'."
   (if (ejc-get-prefix-word)
       (ejc-capf--dot-candidates beg)
     (let ((cached (gethash ejc-db ejc-capf--cache)))
-      (if cached
-          (cdr cached)
-        ;; First time invocation, the cache update is already scheduled, so
-        ;; return only the words available without the database round-trip.
-        (ejc-capf--propertize "ansi sql" (ejc-get-ansi-sql-words))))))
+      (append
+       (when ejc-capf-complete-tables-without-alias
+         (ejc-capf--columns-candidates beg))
+       (if cached
+           (cdr cached)
+         ;; First time invocation, the cache update is already scheduled,
+         ;; so return only the words available without the database
+         ;; round-trip.
+         (ejc-capf--propertize "ansi sql" (ejc-get-ansi-sql-words)))))))
 
 (defun ejc-capf--bounds ()
   "Return the bounds of the symbol being completed.
@@ -264,7 +303,8 @@ Used by the documentation popups, like `corfu-popupinfo-mode'."
   (clrhash ejc-capf--cache)
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
-      (kill-local-variable 'ejc-capf--dot-cache))))
+      (kill-local-variable 'ejc-capf--dot-cache)
+      (kill-local-variable 'ejc-capf--columns-cache))))
 
 ;; Any successfully executed DDL query clears the Clojure side cache, so the
 ;; Emacs side cache should be cleared as well.

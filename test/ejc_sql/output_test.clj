@@ -118,3 +118,22 @@
                      "consectetur adipiscing 宇宙洪荒 日月盈昃" nl
                      "incididunt ut labore et dolore magna aliqua.")]])
                  (str out))))))))
+
+(deftest select-star-test
+  (testing "select-star? fn test."
+    (is (select-star? "SELECT * FROM product"))
+    (is (select-star? "select distinct p.* from product p"))
+    (is (select-star? "SELECT TOP 10 *\nFROM product"))
+    (is (select-star? "SELECT a.*, b.* FROM a JOIN b ON a.id = b.id"))
+    (is (not (select-star? "SELECT name FROM product")))
+    (is (not (select-star? "SELECT *, name FROM product")))
+    (is (not (select-star? "SELECT count(*) FROM product")))))
+
+(deftest remove-empty-columns-test
+  (testing "remove-empty-columns fn test."
+    (is (= [["a" "c"] [1 "x"] [2 nil]]
+           (remove-empty-columns [["a" "b" "c"] [1 nil "x"] [2 "  " nil]])))
+    (is (= [["a" "b"]]
+           (remove-empty-columns [["a" "b"]])))
+    (is (= [["a" "b"] [nil ""]]
+           (remove-empty-columns [["a" "b"] [nil ""]])))))
