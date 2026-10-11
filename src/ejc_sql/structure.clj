@@ -535,8 +535,6 @@
    (:user db)
    (let [{:keys [user connection-uri]} db]
      (or user
-         ;; The connection URI may have no `user=` property at all,
-         ;; e.g. "jdbc:sqlite:/path/to/db.sqlite".
          (when connection-uri
            (some-> (let [props-list (.split connection-uri ";")]
                      (first
@@ -789,8 +787,6 @@
                          :path [:keywords]
                          :direct-value (when (vector? keywords-query)
                                          keywords-query)
-                         ;; Some databases (e.g. SQLite) have a static
-                         ;; keywords list instead of a query to obtain it.
                          :sql (when (fn? keywords-query)
                                 (select-db-meta-script db :keywords))
                          :force? force?
@@ -922,15 +918,6 @@
       (flatten
        (mapv #(get-tables db % true)
              (distinct (get-owners db true))))))
-
-(def select-re
-  (re-pattern (str "(?i)\\s*SELECT\\s+(.*\\s+)?FROM\\s+(\\S+)")))
-
-(defn select-sql?
-  "If `sql` is SELECT query, return a table name used in FROM clause.
-  Otherwise return nil."
-  [sql]
-  (nth (re-find select-re sql) 2))
 
 (def from-clause-re
   "Match the tables list of a FROM clause, up to the next clause keyword."

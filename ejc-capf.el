@@ -54,11 +54,7 @@ side, so the cached candidates are known to be incomplete."
   :type 'number :group 'ejc-sql)
 
 (defcustom ejc-capf-complete-tables-without-alias nil
-  "When t complete columns of the queried tables even without an alias.
-Without a prefix (no `alias.') offer the columns of all the tables in the
-FROM and JOIN clauses of the SQL expression at point.  It requires a
-synchronous database round-trip, once per completed word.  When nil the
-columns are completed only after `alias.' or `table.'."
+  "When t complete columns of the queried tables even without an alias."
   :type 'boolean
   :safe #'booleanp
   :group 'ejc-sql)
@@ -202,8 +198,9 @@ the request is synchronous, but its result is cached, see
 
 (defun ejc-capf--columns-candidates (beg)
   "Return the columns of the tables used in the SQL expression at point.
+See `ejc-capf-complete-tables-without-alias'.
 Used when the word starting at BEG has no prefix (no `alias.'), so the
-columns of all the tables in the FROM and JOIN clauses are returned.  Like
+columns of all the tables in the FROM and JOIN clauses are returned. Like
 the dot completion candidates the request is synchronous, but its result is
 cached, see `ejc-capf--dot-cache-key'."
   (let ((key (ejc-capf--dot-cache-key beg)))
@@ -231,8 +228,7 @@ Unfiltered - the filtering is up to the `completion-styles'."
        (if cached
            (cdr cached)
          ;; First time invocation, the cache update is already scheduled,
-         ;; so return only the words available without the database
-         ;; round-trip.
+         ;; so return only the words available without the database round-trip.
          (ejc-capf--propertize "ansi sql" (ejc-get-ansi-sql-words)))))))
 
 (defun ejc-capf--bounds ()

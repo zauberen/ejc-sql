@@ -300,7 +300,7 @@ while the user is typing the column name.
 
 By default the columns are completed only after `table_alias.`. To complete
 the columns of all the tables in the `FROM` and `JOIN` clauses without any
-prefix as well (one synchronous request per completed word):
+prefix as well:
 
 ```lisp
 (setq ejc-capf-complete-tables-without-alias t)
@@ -387,17 +387,6 @@ representation of any field type, but it is especially useful for `varchar` and
 `ejc-set-use-unicode` sets using unicode for grid borders, e.g. use `─┼─`
 instead of `-+-` (`nil` by default).
 
-`ejc-hide-empty-columns` removes columns where every value is `NULL` or
-blank from the result set output (`nil` by default). It is applied only to
-`SELECT *` queries (including `SELECT t.*` and `SELECT a.*, b.*`), so columns
-you list explicitly are always shown. Unlike the functions above it's a
-regular customizable variable, so set it with `setq`, `M-x customize` or
-`use-package`'s `:custom`:
-
-```elisp
-(setq ejc-hide-empty-columns t)
-```
-
 All these functions change Clojure variables, so if you want to change
 defaults, to avoid Clojure nREPL autolaunch on Emacs start, you should add
 them to the `ejc-sql-connected-hook` in your `.emacs`, e.g.:
@@ -409,6 +398,14 @@ them to the `ejc-sql-connected-hook` in your `.emacs`, e.g.:
             (ejc-set-show-too-many-rows-message t)
             (ejc-set-column-width-limit 25)
             (ejc-set-use-unicode t)))
+```
+
+`ejc-hide-empty-columns` removes columns where every value is `NULL` or
+blank from the result set output (`nil` by default). It is applied only to
+`SELECT *` queries (including `SELECT t.*` and `SELECT a.*, b.*`), so columns
+you list explicitly are always shown.
+```lisp
+(setq ejc-hide-empty-columns t)
 ```
 
 Current result set table minor-mode is `orgtbl-mode`. This mode provides some

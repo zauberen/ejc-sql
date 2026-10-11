@@ -812,9 +812,6 @@ brackets is a symbol under point (cursor). Return a list of two items:
       (ejc--eval-sql-and-log-print
        (or db ejc-db)
        prepared-sql
-       ;; A float, not a Lisp timestamp: it makes a round-trip through
-       ;; the Clojure side, and clomacs can't pass a (TICKS . HZ) pair,
-       ;; which `current-time' returns when `current-time-list' is nil.
        :start-time (float-time)
        :rows-limit rows-limit
        :fetch-size fetch-size
