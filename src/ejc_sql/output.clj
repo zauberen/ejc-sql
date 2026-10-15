@@ -137,16 +137,24 @@
   (or (nil? v)
       (and (string? v) (s/blank? v))))
 
+(declare min-not-zero)
+
 (defn remove-empty-columns
   "Remove columns where all values are null or blank from result set `rows`.
-  The first row of `rows` is the header. Return `rows` unchanged if there are
-  no data rows or every column is empty."
-  [rows]
-  (let [[headers & data] rows]
-    (if (empty? data)
+  The first row of `rows` is the header. Only the rows `print-table` shows
+  (see its `limit`) are checked, so a column is not kept because of a value
+  in the rows cut by the limit. Return `rows` unchanged if there are no data
+  rows or every column is empty."
+  [rows & [limit]]
+  (let [[headers & data] rows
+        row-limit (or limit (min-not-zero @max-rows @fetch-size))
+        shown (if (and row-limit (> row-limit 0))
+                (take row-limit data)
+                data)]
+    (if (empty? shown)
       rows
       (let [keep-idx (filterv
-                      (fn [i] (not (every? #(blank-value? (nth % i)) data)))
+                      (fn [i] (not (every? #(blank-value? (nth % i)) shown)))
                       (range (count headers)))]
         (if (or (empty? keep-idx)
                 (= (count keep-idx) (count headers)))

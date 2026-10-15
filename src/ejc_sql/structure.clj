@@ -1034,9 +1034,13 @@
             ;; INSERT INTO table (field1, .#) values (123, 'text')
             ;; or
             ;; UPDATE table SET field1 = 123, .# = 'text' WHERE id = 1
-            (autocomplete-result
-             (distinct
-              (mapcat #(get-colomns db % true) query-tables)))
+            (do
+              ;; Start receiving the columns of all the tables at once,
+              ;; then wait for them, so the metadata queries run in parallel.
+              (run! #(get-colomns db % false) query-tables)
+              (autocomplete-result
+               (distinct
+                (mapcat #(get-colomns db % true) query-tables))))
             ;; Other queries types
             (autocomplete-nothing)))
         (if (in? tables-list prefix-1 :case-sensitive false)

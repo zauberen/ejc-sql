@@ -250,7 +250,7 @@ breaks are handled."
                               (if (and o/*hide-empty-columns*
                                        (o/select-star?
                                         (s/replace sql-part comments-re "")))
-                                (o/remove-empty-columns result)
+                                (o/remove-empty-columns result fetch-size)
                                 result)
                               fetch-size)
                              (println result))))]

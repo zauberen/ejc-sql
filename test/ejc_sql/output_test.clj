@@ -136,4 +136,7 @@
     (is (= [["a" "b"]]
            (remove-empty-columns [["a" "b"]])))
     (is (= [["a" "b"] [nil ""]]
-           (remove-empty-columns [["a" "b"] [nil ""]])))))
+           (remove-empty-columns [["a" "b"] [nil ""]])))
+    (testing "rows beyond the limit are not checked."
+      (is (= [["a"] [1] [2] [3]]
+             (remove-empty-columns [["a" "b"] [1 nil] [2 nil] [3 "x"]] 2))))))

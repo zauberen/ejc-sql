@@ -822,7 +822,7 @@ brackets is a symbol under point (cursor). Return a list of two items:
        :result-file (or result-file
                         (ejc-next-result-file-path))
        :add-outside-borders (ejc-add-outside-borders-p)
-       :hide-empty-columns ejc-hide-empty-columns))))
+       :hide-empty-columns (and ejc-hide-empty-columns t)))))
 
 ;;;###autoload
 (defun ejc-eval-user-sql-region (beg end)
