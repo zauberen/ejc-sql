@@ -40,6 +40,8 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+(require 'seq)
 (require 'ejc-completion-common)
 
 (defcustom ejc-capf-cache-update-ivl-secs 60
@@ -238,6 +240,66 @@ Unfiltered - the filtering is up to the `completion-styles'."
          ;; so return only the words available without the database round-trip.
          (ejc-capf--propertize "ansi sql" (ejc-get-ansi-sql-words)))))))
 
+(defun ejc-capf--unqualified-matches (string table predicate)
+  "Return the candidates of TABLE matching STRING by their unqualified part.
+A qualified candidate, like `alias.column', matches when STRING is a
+prefix of the part after the dot (`column'), so typing a column name
+finds the alias-qualified columns too.  The ordinary prefix matches are
+returned first.  PREDICATE, when non-nil, filters the candidates."
+  (let ((prefix-matches (all-completions string table predicate)))
+    (append
+     prefix-matches
+     (unless (string-empty-p string)
+       (seq-filter
+        (lambda (candidate)
+          (let ((dot (string-search "." candidate)))
+            (and dot
+                 (not (string-prefix-p string candidate
+                                       completion-ignore-case))
+                 (string-prefix-p string (substring candidate (1+ dot))
+                                  completion-ignore-case))))
+        (all-completions "" table predicate))))))
+
+(defun ejc-capf--unqualified-all-completions (string table predicate _point)
+  "The `all-completions' function of the `ejc-capf-unqualified' style.
+See `ejc-capf--unqualified-matches' for STRING, TABLE and PREDICATE."
+  (let ((matches (ejc-capf--unqualified-matches string table predicate)))
+    (when matches
+      (nconc matches 0))))
+
+(defun ejc-capf--unqualified-try-completion (string table predicate point)
+  "The `try-completion' function of the `ejc-capf-unqualified' style.
+See `ejc-capf--unqualified-matches' for STRING, TABLE and PREDICATE.
+POINT is the position of point within STRING."
+  (let ((matches (ejc-capf--unqualified-matches string table predicate)))
+    (cond
+     ((null matches) nil)
+     ((and (null (cdr matches))
+           (eq t (compare-strings string nil nil (car matches) nil nil
+                                  completion-ignore-case)))
+      t)
+     ((null (cdr matches))
+      (cons (car matches) (length (car matches))))
+     ;; Only prefix matches - the common prefix is computed as usual.
+     ((null (cl-set-difference matches (all-completions string table predicate)
+                               :test #'string=))
+      (completion-basic-try-completion string table predicate point))
+     ;; The candidates don't share a common prefix with STRING.
+     (t (cons string point)))))
+
+(add-to-list 'completion-styles-alist
+             '(ejc-capf-unqualified
+               ejc-capf--unqualified-try-completion
+               ejc-capf--unqualified-all-completions
+               "Prefix completion, also matching the part after the dot.
+I.e. `cust' matches both `customer_id' and `c.customer_id'."))
+
+;; Used for the `ejc-sql' completion category, unless it's overridden by
+;; `completion-category-overrides', e.g. by the `orderless' users, which
+;; find `c.customer_id' by `cust' anyway.
+(add-to-list 'completion-category-defaults
+             '(ejc-sql (styles ejc-capf-unqualified basic partial-completion)))
+
 (defun ejc-capf--bounds ()
   "Return the bounds of the symbol being completed.
 The symbol is grabbed backwards only, so the completion is triggered right
@@ -289,7 +351,9 @@ Used by the documentation popups, like `corfu-popupinfo-mode'."
             (lambda (string predicate action)
               (when (eq candidates 'ejc-capf--not-collected)
                 (setq candidates (ejc-capf--candidates beg)))
-              (complete-with-action action candidates string predicate))
+              (if (eq action 'metadata)
+                  '(metadata (category . ejc-sql))
+                (complete-with-action action candidates string predicate)))
             :exclusive 'yes
             :annotation-function #'ejc-capf-annotation
             :company-kind #'ejc-capf-kind

@@ -309,7 +309,11 @@ prefix as well:
 ```
 
 The columns of a table that has an alias in the query are completed qualified
-by this alias, e.g. `SELECT | FROM product p` offers `p.name`.
+by this alias, e.g. `SELECT | FROM product p` offers `p.name`. Typing the
+column name finds them: `ejc-capf` sets the `ejc-capf-unqualified` completion
+style for its `ejc-sql` completion category in `completion-category-defaults`,
+so `na` matches `p.name` as well. `orderless`, `flex` and `substring` styles
+match it anyway.
 
 The documentation of the candidate is shown by `corfu-popupinfo-mode`:
 
