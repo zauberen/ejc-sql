@@ -152,3 +152,24 @@
            (from-tables "SELECT  FROM (SELECT * FROM t) x JOIN users u ON 1=1")))
     (is (= []
            (from-tables "INSERT INTO product (name) VALUES ('socks')")))))
+
+(deftest from-table-aliases-test
+  (testing "from-table-aliases fn test."
+    (is (= [["product" nil]]
+           (from-table-aliases "SELECT name FROM product WHERE id = 1")))
+    (is (= [["product" "p"] ["category" "c"]]
+           (from-table-aliases
+            "SELECT  FROM product p, category c WHERE p.c = c.id")))
+    (is (= [["product" "p"] ["category" "c"] ["price" "pr"] ["stock" nil]]
+           (from-table-aliases (str "SELECT name\n"
+                                    "FROM public.product AS p\n"
+                                    "  JOIN category c ON c.id = p.category_id\n"
+                                    "  LEFT JOIN \"price\" AS pr ON pr.id = p.id\n"
+                                    "  JOIN stock ON stock.id = p.id\n"
+                                    "ORDER BY name"))))
+    (is (= [["emp" "e"] ["emp" "m"]]
+           (from-table-aliases
+            "SELECT  FROM emp e JOIN emp m ON m.id = e.manager_id")))
+    (is (= [["users" "u"]]
+           (from-table-aliases
+            "SELECT  FROM (SELECT * FROM t) x JOIN users u ON 1=1")))))

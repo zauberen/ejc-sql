@@ -306,6 +306,9 @@ prefix as well:
 (setq ejc-capf-complete-tables-without-alias t)
 ```
 
+The columns of a table that has an alias in the query are completed qualified
+by this alias, e.g. `SELECT | FROM product p` offers `p.name`.
+
 The documentation of the candidate is shown by `corfu-popupinfo-mode`:
 
 ```lisp

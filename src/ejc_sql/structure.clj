@@ -1003,6 +1003,50 @@
          (filter not-empty)
          distinct)))
 
+(def ^:private not-alias-words
+  "Words that can follow a table name in FROM or JOIN clause, but are not
+  table aliases."
+  #{"on" "using" "where" "group" "order" "having" "limit" "offset" "fetch"
+    "union" "except" "intersect" "join" "inner" "left" "right" "full" "cross"
+    "natural" "outer" "window" "set" "as"})
+
+(defn- table-alias
+  "Return the alias from the `words` following a table name, or nil."
+  [words]
+  (let [[w1 w2] words
+        alias (if (and w1 (= (s/lower-case w1) "as")) w2 w1)]
+    (when (and alias
+               (re-matches #"[\w$#]+" alias)
+               (not (not-alias-words (s/lower-case alias))))
+      alias)))
+
+(def join-alias-re
+  (re-pattern (str "(?i)\\bJOIN\\s+([^\\s,();]+)"
+                   "(?:\\s+(?:AS\\s+)?([\\w$#]+))?")))
+
+(defn from-table-aliases
+  "Return a list of [table alias] pairs used in FROM and JOIN clauses of
+  `sql`, the alias is nil when the table has no alias. Subqueries are
+  skipped and owner/schema prefixes are removed."
+  [sql]
+  (let [sql (clean-sql sql)
+        from-tables (mapcat
+                     (fn [[_ tables-list]]
+                       (map #(let [[table & words] (s/split (s/trim %) #"\s+")]
+                               [table (table-alias words)])
+                            (s/split tables-list #",")))
+                     (re-seq from-clause-re sql))
+        join-tables (map (fn [[_ table alias]]
+                           [table (table-alias [alias])])
+                         (re-seq join-alias-re sql))]
+    (->> (concat from-tables join-tables)
+         (filter (fn [[table _]]
+                   (and (not-empty table)
+                        (not (s/starts-with? table "(")))))
+         (map (fn [[table alias]] [(unqualify-table table) alias]))
+         (filter (comp not-empty first))
+         distinct)))
+
 (def insert-re
   (re-pattern (str "(?i)\\s*INSERT\\s+INTO\\s+(\\S+)\\s+")))
 
@@ -1024,7 +1068,7 @@
 (defn get-colomns-candidates
   "Return colomns candidates autocomplete list."
   [& {:keys [db sql prefix-1 prefix-2
-             buffer-name point]}]
+             buffer-name point qualify-aliases]}]
   ;; Possible cases:
   ;; 1. [owner|schema.]table.#<colomns-list>
   ;; 2. SELECT alias.#<colomns-list> FROM [owner|schema.]table AS alias
@@ -1086,7 +1130,23 @@
               (run! #(get-colomns db % false) query-tables)
               (autocomplete-result
                (distinct
-                (mapcat #(get-colomns db % true) query-tables))))
+                (if qualify-aliases
+                  ;; SELECT # FROM table1 t1 JOIN table2 t2
+                  ;; -> t1.column, t2.column
+                  (let [aliases (->> (from-table-aliases sql)
+                                     (filter second)
+                                     (group-by (comp s/lower-case first)))]
+                    (mapcat
+                     (fn [table]
+                       (let [columns (get-colomns db table true)]
+                         (if-let [table-aliases
+                                  (get aliases (s/lower-case table))]
+                           (mapcat (fn [[_ alias]]
+                                     (map #(str alias "." %) columns))
+                                   table-aliases)
+                           columns)))
+                     query-tables))
+                  (mapcat #(get-colomns db % true) query-tables)))))
             ;; Other queries types
             (autocomplete-nothing)))
         (if (in? tables-list prefix-1 :case-sensitive false)

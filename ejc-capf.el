@@ -54,7 +54,9 @@ side, so the cached candidates are known to be incomplete."
   :type 'number :group 'ejc-sql)
 
 (defcustom ejc-capf-complete-tables-without-alias nil
-  "When t complete columns of the queried tables even without an alias."
+  "When t complete columns of the queried tables even without an alias.
+The columns of the tables having an alias in the query are completed
+qualified by this alias, e.g. `p.name' for `SELECT | FROM product p'."
   :type 'boolean
   :safe #'booleanp
   :group 'ejc-sql)
@@ -200,7 +202,8 @@ the request is synchronous, but its result is cached, see
   "Return the columns of the tables used in the SQL expression at point.
 See `ejc-capf-complete-tables-without-alias'.
 Used when the word starting at BEG has no prefix (no `alias.'), so the
-columns of all the tables in the FROM and JOIN clauses are returned. Like
+columns of all the tables in the FROM and JOIN clauses are returned.  The
+columns of an aliased table are qualified by its alias (`alias.column'). Like
 the dot completion candidates the request is synchronous, but its result is
 cached, see `ejc-capf--dot-cache-key'."
   (let ((key (ejc-capf--dot-cache-key beg)))
@@ -209,8 +212,12 @@ cached, see `ejc-capf--dot-cache-key'."
              (< (float-time) (cadr ejc-capf--columns-cache)))
         (cddr ejc-capf--columns-cache)
       (let* ((ejc-candidates-pending nil)
-             (candidates (ejc-capf--propertize "column"
-                                               (ejc-colomns-candidates))))
+             (candidates (ejc-capf--propertize
+                          "column"
+                          (ejc-candidates
+                           (lambda (&rest args)
+                             (apply #'ejc-get-colomns-candidates
+                                    :qualify-aliases t args))))))
         (setq ejc-capf--columns-cache
               (cons key (cons (ejc-capf--expiration-time ejc-candidates-pending)
                               candidates)))
