@@ -53,6 +53,8 @@ formatting of SQL scripts are also available.
     - [Dedicated ejc-sql nREPL](#dedicated-nrepl)
     - [Different project nREPL](#different-nrepl)
   - [Goto definition & results ring](#goto-definition-results-ring)
+  - [Query log](#query-log)
+  - [MCP server for AI agents](#mcp-server)
 - [List of keybindings & functions](#keybindings)
 - [Yasnippet](#yasnippet)
 - [Troubleshooting](#troubleshooting)
@@ -64,7 +66,7 @@ formatting of SQL scripts are also available.
 ## Installation
 
 1. To run Clojure, install [Leiningen](http://leiningen.org) (assuming you have
-   already installed Java 7+).
+   already installed Java 11+).
 
 2. Add [MELPA](https://github.com/melpa/melpa#usage) (if not yet present) to your
    `package-archives` list.
@@ -384,8 +386,9 @@ default).
 `ejc-set-column-width-limit` sets limit for outputing the number of chars per
 column (`30` by default). The rest will be replaced by `...`. Set to
 `nil` if you want to disable this limit. This setting is applied to the text
-representation of any field type, but it is especially useful for `varchar` and
-`CLOB` fields.
+representation of any field type but numbers, and it is especially useful for
+`varchar` and `CLOB` fields. Numbers are never cut: in a column of numbers they
+are right-aligned, their decimal points one under another.
 
 `ejc-set-use-unicode` sets using unicode for grid borders, e.g. use `─┼─`
 instead of `-+-` (`nil` by default).
@@ -1176,7 +1179,7 @@ Then add `ejc-sql` to your project as a dependency in `project.clj`:
   ...
   :dependencies [[org.clojure/clojure "1.10.0"]
                  ...
-                 [ejc-sql "0.4.2-SNAPSHOT"]]
+                 [ejc-sql "0.6.0-SNAPSHOT"]]
   ...
   )
 ```
@@ -1184,7 +1187,7 @@ or if you don't want to change your `project.clj` file, you can add it globally
 in `~/.lein/profiles.clj`, e.g.:
 ```edn
 {:user {:plugins [[cider/cider-nrepl "0.25.0-alpha1"]]
-        :dependencies [[ejc-sql "0.4.2-SNAPSHOT"]]}}
+        :dependencies [[ejc-sql "0.6.0-SNAPSHOT"]]}}
 ```
 The actual version of `ejc-sql` backend in Clojars:&nbsp;
 [![Clojars Project](https://clojars.org/ejc-sql/latest-version.svg)](https://clojars.org/ejc-sql)
@@ -1220,6 +1223,296 @@ it looks like goto definition, then return back. For the purpose of convenience,
 the following keybindings are provided:
 * <kbd>M-.</kbd> `ejc-describe-entity`
 * <kbd>M-,</kbd> `ejc-show-prev-result`
+
+<a id="query-log"></a>
+### Query log
+
+Every query you run is written to the query log, one file a day, in
+`~/.ejc-sql/log/` (`%AppData%\ejc-sql\` on Windows), e.g.
+`~/.ejc-sql/log/2026-10-29.log`. `M-x ejc-open-log` opens the log of the last
+day queries were run on. The statements of the AI agents are logged too, see
+[MCP server for AI agents](#mcp-server).
+
+To turn the log off, add `ejc-set-log-queries` to the `ejc-sql-connected-hook`,
+like the settings of [Performance & output
+customization](#performance-output-customization):
+```lisp
+(add-hook 'ejc-sql-connected-hook
+          (lambda ()
+            (ejc-set-log-queries nil)))
+```
+With the log off, the statements of the agents are not logged either.
+
+<a id="mcp-server"></a>
+### MCP server for AI agents
+
+`ejc-sql` can serve your databases as tools for AI coding agents: Claude Code
+or Codex, or any other [MCP](https://modelcontextprotocol.io) client. The
+server runs inside the `ejc-sql` nREPL, so it reuses the JDBC drivers, the
+database structure cache and the output formatting already there, or
+[without Emacs](#mcp-without-emacs) at all.
+It is off by default and needs Java 11 or newer.
+
+To turn it on, create `~/.ejc-sql/mcp.edn` (or the file set in
+`ejc-mcp-config-file`):
+
+```clojure
+{:port 8765               ; optional, 8765 by default
+ :token "some-secret"     ; optional, require "Authorization: Bearer some-secret"
+ :writable #{"dev-db"}}   ; optional, the connections an agent may change
+```
+
+An empty file means all the defaults. The server starts with the next
+`M-x ejc-connect` and listens on `http://127.0.0.1:8765/mcp`, reachable from
+this machine only. `*Messages*` shows its URL, or why it could not start, e.g.
+the port is busy. `:port` is read once, when the server starts; `:token` and
+`:writable` on every request, so their changes take effect at once. Remove the
+file to turn the server off: it answers `503` to everything while the file is
+gone.
+
+**What an agent sees.** The connections of
+[`databases.edn`](#mcp-databases), if there is one, and the ones you have
+connected to with `ejc-connect` (or used from an org-mode block with
+`:ejc-sql`) since the `ejc-sql` nREPL was started, by their names. A
+connection of Emacs replaces the one of `databases.edn` with the same name.
+Users, passwords and JDBC URLs of the connections are never shown.
+
+<a id="mcp-databases"></a>
+**Connections without `ejc-connect`.** An agent can use a database you have
+not connected to since Emacs started, or with no Emacs running, when you list
+it in `databases.edn` next to `mcp.edn`: connection names mapped to the
+parameters of `ejc-create-connection`.
+
+```clojure
+{"dev-db" {:dependencies [[org.postgresql/postgresql "42.6.0"]]
+           :subprotocol "postgresql"
+           :subname "//localhost:5432/my_db_name"
+           :user "a_user"
+           :password "secret"
+           :description "Test VM, through an ssh tunnel"}
+ "local-h2" {:classpath "~/.m2/repository/com/h2database/h2/2.5.252/h2-2.5.252.jar"
+             :subprotocol "h2"
+             :subname "file:///home/me/db/test;AUTO_SERVER=TRUE"}}
+```
+
+You write the file, `ejc-sql` never does, nor does it relate it to your
+`ejc-create-connection` calls: keeping the two in step is up to you. Every
+connection needs `:dbtype`, `:subprotocol` or `:connection-uri`, `:classpath`
+may be a path or a vector of them, starting with `~` or not. `:description`,
+optional, is shown to the agents by `list_connections` and `connection_info`:
+tell there what the host and the port alone don't, e.g. where a tunnel to
+`127.0.0.1` leads; `ejc-create-connection` takes it too. The file is read
+when the server starts and again on the first request after it changes, so the
+connections come and go without a restart. The JDBC drivers of its connections
+load when the server starts, in the background in the nREPL of Emacs; the
+`:dependencies` not downloaded yet are downloaded then. A tool waits for a
+driver still loading for 10 seconds at most. A malformed file makes every tool
+fail, telling why, until you fix it. The file holds passwords: make it
+readable to you only (`chmod 600`), and keep the agents from reading it, see
+the permissions below.
+
+ Tool               | What it does
+--------------------|------------------------------------------------------------
+ `list_connections` | Connection names, database types, hosts, ports, databases, writable or not, descriptions
+ `connection_info`  | Description, database and driver versions, current catalog and schema, the case of unquoted names
+ `list_tables`      | Tables of a connection, of an owner (schema) if given, filtered by a substring
+ `find_columns`     | Columns whose names hold a substring, of an owner if given, of all of them otherwise, of the tables whose names hold another one if given
+ `describe_table`   | Columns with types, sizes, `NOT NULL`, defaults and comments, primary key, indexes and foreign keys, as `ejc-describe-table` shows them
+ `query`            | One read-only statement: `SELECT`, `WITH`, `VALUES`, `SHOW`, `EXPLAIN`, `DESCRIBE`
+ `execute`          | Statements that change data or schema, several in one transaction, on writable connections only
+
+Every statement an agent runs is written to the [query log](#query-log)
+(`M-x ejc-open-log`) under a `-- [mcp <connection>]` line, unless the log is
+turned off.
+
+**`query` is read-only in layers.** Only one statement per call, starting
+with one of the words above, is accepted, with no `;` inside it, not even in a
+string literal or a comment: a quote or a comment the database reads
+differently could hide a second statement there. SQL Server and Sybase call
+the procedure named by the first word of a batch, `EXEC` left out, so there
+only `SELECT` and `WITH` are accepted. They need no `;` between statements
+either, so the SQL is rejected as well if it holds, outside string literals,
+quoted names and comments, a word of a statement that writes, runs code or
+controls transactions: `INSERT`, `DROP`, `EXEC`, `SET`, `INTO`, `COMMIT` and
+the like. It runs on a connection of its own, marked read-only for the JDBC
+driver, switched to the read-only mode of the database for PostgreSQL, MySQL,
+MariaDB, Oracle and SQLite, in a transaction which is always rolled back.
+These layers make writes through `query` unlikely, not impossible: e.g.
+PostgreSQL's `dblink_exec` writes outside of the transaction. The only
+guarantee is a database user with read-only grants, so connect to a database
+that must not change as such a user.
+
+A result is limited to 200 rows (`max_rows`, up to 1000), a statement to 30
+seconds (`timeout_s`, up to 50), below the default 60-second tool timeout in
+Claude Code and Codex. Text values of `query` and `describe_table` are cut to
+the `ejc-set-column-width-limit` of Emacs, 30 characters by default, unless the
+agent asks for another width (`max_column_width`, 0 for no limit). A single
+row of `query` is cut only to a width asked for, a single value never, nor
+are numbers and dates. A cut value keeps that
+many characters and tells how many more it has: `1:alpha,2:beta,3:gamma,4:delta...[+17]`.
+
+The tables an agent gets are drawn in ASCII, whatever `ejc-set-use-unicode`
+says, with no outside borders, as psql draws them: fewer tokens. A result of
+`query` is a row per line, a single row is a line per column,
+`column | value`. `NULL` tells a null from an empty string, line breaks and
+tabs inside a value are written as `\n`, `\r` and `\t`, not replaced with
+spaces as in Emacs.
+
+<a id="mcp-without-emacs"></a>
+**Without Emacs.** Build the server with `lein uberjar` in the `ejc-sql`
+directory and run it:
+
+```sh
+java -jar target/ejc-sql.jar                    # with ~/.ejc-sql/mcp.edn
+java -jar target/ejc-sql.jar /path/to/mcp.edn
+```
+
+It serves the connections of `databases.edn` next to `mcp.edn`, loads their
+JDBC drivers before it starts listening, prints its URL and runs until you stop
+it. The rest is as with Emacs, but there is no `ejc-connect` to add a
+connection, and what goes wrong is printed instead of shown in `*Messages*`.
+The port is taken by the first server started: an nREPL of Emacs started next
+can't listen on it, so the agents don't see the connections made there. On
+Windows `~` is `%UserProfile%` here, which may not be the home of Emacs: pass
+the path of the `mcp.edn` Emacs uses.
+
+**`execute` changes data with your consent.** It takes both: the connection
+listed in `:writable` and your approval of the call in the client. The server
+marks `execute` so that Claude Code asks for every call, in every permission
+mode, without "don't ask again". For Codex, configure the tool approval policy
+shown below. The approval shows what the agent sends, the server is called
+after it: the connection name, so name a connection to tell where it leads,
+and the statements.
+
+A call is one statement, `sql`, committed at once, or several, `statements`,
+approved together and run in this order in one transaction: committed if all
+of them succeed, rolled back at the first failure, the result telling the
+outcome of each one. MySQL, MariaDB, Oracle and H2 commit the transaction a
+DDL statement runs in, so there statements holding one are rejected, unless
+the agent passes `transaction: false` to run them one by one, each committed
+at once, stopping at the first failure; `BEGIN`, `COMMIT` and the like are
+rejected among statements everywhere. What a database never rolls back is
+not rolled back either: the tables of MyISAM, a procedure committing itself.
+There are no transactions across calls.
+
+Before an `UPDATE` or a `DELETE` the agent is told to count the rows it
+changes with `query` and to pass the count as `expected_rows`: you see the
+number when approving the call, and the server runs the statement in a
+transaction, rolled back if it changes another number of rows.
+
+```json
+{"connection": "dev-db",
+ "statements": [{"sql": "UPDATE accounts SET balance = balance - 100 WHERE id = 1",
+                 "expected_rows": 1},
+                {"sql": "UPDATE accounts SET balance = balance + 100 WHERE id = 2",
+                 "expected_rows": 1}]}
+```
+
+To send a statement containing `;`, e.g. a procedure body or a string literal
+with it, start its SQL with a `delimiter` line, see
+[Separators & delimiters](#separators-delimiters).
+
+**Claude Code setup.**
+
+```sh
+claude mcp add --transport http --scope user ejc-sql http://127.0.0.1:8765/mcp
+# or, with a :token
+claude mcp add --transport http --scope user ejc-sql http://127.0.0.1:8765/mcp \
+    --header "Authorization: Bearer some-secret"
+```
+
+The same in a project's `.mcp.json`, the token taken from the environment:
+
+```json
+{"mcpServers": {"ejc-sql": {"type": "http",
+                            "url": "http://127.0.0.1:8765/mcp",
+                            "headers": {"Authorization": "Bearer ${EJC_SQL_MCP_TOKEN}"}}}}
+```
+
+The permissions in `~/.claude/settings.json`: run the read tools without
+asking, ask for every `execute` (in every permission mode, for the clients that
+ignore the server's mark too), keep the agent from editing
+`~/.ejc-sql/mcp.edn`, and so from making connections writable, and from reading
+the passwords of `~/.ejc-sql/databases.edn`:
+
+```json
+{"permissions": {"allow": ["mcp__ejc-sql__list_connections",
+                           "mcp__ejc-sql__connection_info",
+                           "mcp__ejc-sql__list_tables",
+                           "mcp__ejc-sql__find_columns",
+                           "mcp__ejc-sql__describe_table",
+                           "mcp__ejc-sql__query"],
+                 "ask": ["mcp__ejc-sql__execute"],
+                 "deny": ["Edit(~/.ejc-sql/**)",
+                          "Read(~/.ejc-sql/databases.edn)"]}}
+```
+
+`~/.ejc-sql` is the directory in the home of Emacs. On Windows, where Emacs may
+take `%AppData%` for its home while Claude Code takes `%UserProfile%`, write
+the full path in the rule, e.g. `Edit(//c/Users/me/AppData/Roaming/.ejc-sql/**)`.
+
+The `Edit` rule covers the file tools of Claude Code and the shell
+redirections, the `Read` one its file tools, neither a script opening the file
+itself; the Claude Code
+[sandbox](https://code.claude.com/docs/en/sandboxing) does.
+
+**Codex setup.**
+
+Register the server in a local Codex client on the same machine as Emacs:
+
+```sh
+codex mcp add ejc-sql --url http://127.0.0.1:8765/mcp
+# or, with a :token
+export EJC_SQL_MCP_TOKEN='some-secret'
+codex mcp add ejc-sql --url http://127.0.0.1:8765/mcp \
+    --bearer-token-env-var EJC_SQL_MCP_TOKEN
+```
+
+Set the environment variable to the configured `:token` before starting Codex.
+The equivalent configuration in `~/.codex/config.toml`, with an approval
+policy that runs read tools without asking and prompts for `execute`:
+
+```toml
+[mcp_servers.ejc-sql]
+url = "http://127.0.0.1:8765/mcp"
+bearer_token_env_var = "EJC_SQL_MCP_TOKEN" # omit when :token is not set
+tool_timeout_sec = 60
+default_tools_approval_mode = "writes"
+
+[mcp_servers.ejc-sql.tools.execute]
+approval_mode = "prompt"
+```
+
+For read tools only, add `disabled_tools = ["execute"]` to
+`[mcp_servers.ejc-sql]`. Codex CLI and the IDE extension share this
+configuration; see the [Codex MCP documentation](https://developers.openai.com/codex/mcp).
+Once the server runs, start or restart Codex. In the CLI, `/mcp` shows the
+connected server and its tools; `codex mcp list` shows its configuration.
+
+An agent knows nothing about a server it can't reach, so tell it in
+`~/.claude/CLAUDE.md` for Claude Code or `~/.codex/AGENTS.md` for Codex:
+
+```markdown
+## Databases
+
+Reach databases only through the `ejc-sql` MCP server, never by other means
+(psql, mysql, sqlplus, JDBC or database drivers in scripts). If the server is
+unavailable (connection refused), ask me to start it, with `M-x ejc-connect`
+to any database in Emacs or with `java -jar ejc-sql.jar`, then to reconnect
+it with `/mcp`. If the database is missing from `list_connections`, ask me to
+add it to `databases.edn` of ejc-sql or to connect to it with `M-x ejc-connect`
+in Emacs.
+```
+
+Claude Code started before the server gives up on it after a few attempts:
+reconnect it from `/mcp` once the server runs.
+
+**Not supported.** The results of the agent are not shown in
+`*ejc-sql-output*`, run the statement from the query log to see one. An agent
+can't start the `ejc-sql` nREPL or connect to a database. MCP resources,
+prompts, SSE streams, sessions, OAuth and the stdio transport are not
+supported either. The MCP revisions served are `2026-07-28` and the earlier
+`2025-03-26` to `2025-11-25`.
 
 <a id="keybindings"></a>
 ## List of keybindings & functions
@@ -1260,7 +1553,7 @@ List of other interactive functions
  `ejc-mark-this-sql`                | Mark SQL script bounded by the `ejc-sql-separator` or/and buffer boundaries
  `ejc-show-tables-list`             | Show tables list
  `ejc-show-constraints-list`        | Show constraints list
- `ejc-open-log`                     | Open log
+ `ejc-open-log`                     | Open the query log, kept in `~/.ejc-sql/log/` (`%AppData%\ejc-sql` on Windows)
  `ejc-get-temp-editor-buffer`       | Create ad-hoc SQL editor buffer, use prefix arg number to get many buffers
  `ejc-print-cache`                  | Output current connection cache
  `ejc-invalidate-cache`             | Clean your current connection cache (database owners and tables list)
@@ -1311,10 +1604,11 @@ unavailable in maven central, like the Oracle ones.
 
 ## Requirements:
 
-* [GNU Emacs](http://www.gnu.org/software/emacs/emacs.html) 26.
+* [GNU Emacs](http://www.gnu.org/software/emacs/emacs.html) 30.2 or newer
+* [Java](https://openjdk.org) 11 or newer
 * [Leiningen](http://leiningen.org) 2.x
 * [clomacs](https://github.com/clojure-emacs/clomacs)
-* [clojure/java.jdbc](https://github.com/clojure/java.jdbc) 0.5.8
+* [clojure/java.jdbc](https://github.com/clojure/java.jdbc) 0.7.10
 * [dash](https://github.com/magnars/dash.el)
 * [spinner.el](https://github.com/Malabarba/spinner.el)
 * [auto-complete](https://github.com/auto-complete/auto-complete) *(optional)*

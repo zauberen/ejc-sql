@@ -20,19 +20,47 @@
   (:require [clojure.string :as s]
             [clojure.java.io :refer [file writer]]
             [ejc-sql.lib :refer [*max-column-width* dml? simple-join windows?]])
-  (:import (java.io File)
-           (java.lang Character$UnicodeBlock)
+  (:import (java.io File IOException)
            (org.apache.commons.lang3 StringUtils)
            (org.hibernate.engine.jdbc.internal BasicFormatterImpl
                                                DDLFormatterImpl)))
 
 (def ^:dynamic *add-outside-borders* true)
 
-(defn get-log-dir []
-  (file (if windows?
-          (System/getenv "AppData")
-          "/var/log/")
-        "ejc-sql"))
+(def ^:dynamic *null-text*
+  "The text of a NULL value: none, as psql and Emacs show it, or NULL, as
+  the MCP server does, to tell it from an empty string."
+  "")
+
+(def ^:dynamic *ascii-borders*
+  "Draw the borders of ASCII whatever `use-unicode` says, as the MCP server
+  does: a line of `-` takes the agent fewer tokens than one of box-drawing
+  characters."
+  false)
+
+(def ^:dynamic *mark-cuts*
+  "Keep the first `*max-column-width*` characters of a value cut to them and
+  follow them with `cut-mark`, as the MCP server does, instead of ending the
+  value with ...: a value may end with ... itself, a cut one then looks
+  whole to the agent."
+  false)
+
+(defn cut-mark
+  "What follows a value cut for the agent, `n` characters of it left out."
+  [n]
+  (str "...[+" n "]"))
+
+(defn get-log-dir
+  "The query log directory: `ejc-sql` in `%AppData%` on Windows,
+  `~/.ejc-sql/log` elsewhere, or the `ejc-sql.log-dir` system property, which
+  the tests set to keep off the user's log."
+  []
+  (let [home (System/getProperty "user.home")]
+    (if-let [dir (System/getProperty "ejc-sql.log-dir")]
+      (file dir)
+      (if windows?
+        (file (or (System/getenv "AppData") home) "ejc-sql")
+        (file home ".ejc-sql" "log")))))
 
 (defn get-log-file [& [create-new]]
   (loop [xs (take 100 (range))]
@@ -56,23 +84,41 @@
 (defn print-log-file-path []
   (print (.getAbsolutePath (or (get-log-file) (get-log-dir)))))
 
-(defn log-sql [sql]
-  (let [log-file (get-log-file true)
-        is-new-file (not (.exists log-file))]
-    (when is-new-file
-      (.mkdirs (File. (.getParent log-file)))
-      (.createNewFile log-file))
-    (with-open [wrtr (writer log-file :append true)]
-      (when is-new-file
-        (.write wrtr (str "-- -*- mode: sql; -*-\n"
-                          "-- Local Variables:\n"
-                          "-- eval: (ejc-sql-mode)\n"
-                          "-- End:\n")))
-      (.write wrtr (str (simple-join 50 "-") " "
-                        (.format (new java.text.SimpleDateFormat
-                                      "yyyy.MM.dd HH:mm:ss.S")
-                                 (new java.util.Date))
-                        " " (simple-join 2 "-") "\n" sql "\n")))))
+(def log-queries
+  "Write the queries to the query log, see `set-log-queries`."
+  (atom true))
+
+(defn set-log-queries
+  "Turn the query log on, or off with nil. Off, `log-sql` writes nothing,
+  the queries of the agents included."
+  [val]
+  (reset! log-queries (boolean val)))
+
+(defn log-sql
+  "Append `sql` to the query log of today, unless `log-queries` is off.
+  A log that can't be written is reported to stderr, the query runs anyway."
+  [sql]
+  (when @log-queries
+    (try
+      (let [^File log-file (get-log-file true)
+            is-new-file (not (.exists log-file))]
+        (when is-new-file
+          (.mkdirs (File. (.getParent log-file)))
+          (.createNewFile log-file))
+        (with-open [wrtr (writer log-file :append true)]
+          (when is-new-file
+            (.write wrtr (str "-- -*- mode: sql; -*-\n"
+                              "-- Local Variables:\n"
+                              "-- eval: (ejc-sql-mode)\n"
+                              "-- End:\n")))
+          (.write wrtr (str (simple-join 50 "-") " "
+                            (.format (new java.text.SimpleDateFormat
+                                          "yyyy.MM.dd HH:mm:ss.S")
+                                     (new java.util.Date))
+                            " " (simple-join 2 "-") "\n" sql "\n"))))
+      (catch IOException e
+        (binding [*out* *err*]
+          (println "ejc-sql: can't write the query log:" (.getMessage e)))))))
 
 (def fetch-size
   "Limit number of records to output."
@@ -178,7 +224,7 @@
   (reset! use-unicode val))
 
 (defn u? [unicode-str ascii-str]
-  (if @use-unicode unicode-str ascii-str))
+  (if (and @use-unicode (not *ascii-borders*)) unicode-str ascii-str))
 
 (defn print-maps
   "Prints a collection of maps in a textual table. Prints table headings
@@ -217,33 +263,101 @@
     (if (and *max-column-width*
              (> *max-column-width* 0)
              (> (count s) *max-column-width*))
-      (str (subs s 0 (- *max-column-width* 3)) "...")
+      (if *mark-cuts*
+        (str (subs s 0 *max-column-width*)
+             (cut-mark (- (count s) *max-column-width*)))
+        (str (subs s 0 (- *max-column-width* 3)) "..."))
       s)))
 
 (defn min-not-zero [x y]
   (min (if (> x 0) x y)
        (if (> y 0) y x)))
 
-(defn- cjk-char?
-  "Return true if argument char is CJK character."
-  [char]
-  (= (Character$UnicodeBlock/of char)
-     Character$UnicodeBlock/CJK_UNIFIED_IDEOGRAPHS))
-
 (defn- cjk-chars-count
-  "Return count of CJK characters in string."
-  [text]
-  (count (filter cjk-char? text)))
+  "Return count of CJK characters in string: of the block
+  `Character$UnicodeBlock/CJK_UNIFIED_IDEOGRAPHS`, U+4E00..U+9FFF, checked
+  as a range of primitive chars. It's run on every character of a table,
+  and `Character$UnicodeBlock/of` looks the block up."
+  [^String text]
+  (loop [i 0
+         n 0]
+    (if (< i (.length text))
+      (recur (inc i) (let [c (int (.charAt text i))]
+                       ;; Not (<= 0x4E00 c 0x9FFF): its three arguments
+                       ;; are boxed.
+                       (if (and (<= 0x4E00 c) (<= c 0x9FFF))
+                         (inc n)
+                         n)))
+      n)))
 
 (defn- string-length
   "Return string length, given that CJK characters have a length of 2."
-  [text]
-  (loop [string text
-         length 0]
-    (if (= (count string) 0)
-      length
-      (recur (next string) (+ length
-                              (if (cjk-char? (first string)) 2 1))))))
+  [^String text]
+  (+ (.length text) (cjk-chars-count text)))
+
+(defn- pad
+  "`text` followed by spaces up to `width`, given that CJK characters have
+  a length of 2. Unlike `format` with a width, it parses no pattern."
+  [text width]
+  (let [n (- width (string-length text))]
+    (if (pos? n)
+      (str text (apply str (repeat n \space)))
+      text)))
+
+(defn- pad-left
+  "Spaces up to `width` followed by `text`, as `pad` counts them."
+  [text width]
+  (let [n (- width (string-length text))]
+    (if (pos? n)
+      (str (apply str (repeat n \space)) text)
+      text)))
+
+(defn- fraction-length
+  "The length of the fraction of the number `text`, its `.` included, 0 if
+  it has none."
+  [^String text]
+  (let [i (.indexOf text (int \.))]
+    (if (neg? i) 0 (- (.length text) i))))
+
+(defn- number-columns
+  "For each column of `rows`: the length of the longest fraction of its
+  numbers, for a column of numbers and NULLs, nil for any other column."
+  [rows]
+  (when (seq rows)
+    (apply map
+           (fn [& values]
+             (when (and (some number? values)
+                        (every? #(or (nil? %) (number? %)) values))
+               (apply max (map #(fraction-length (str %))
+                               (filter number? values)))))
+           rows)))
+
+(defn- cell-text
+  "The text of the `value` of a column, cut to `*max-column-width*`. A
+  number is never cut, and in a column of numbers it's followed by spaces
+  up to the `fraction` length of the column: right-aligned, the numbers
+  then have their `.` one under another."
+  [value fraction]
+  (cond
+    (nil? value) *null-text*
+    (number? value) (let [text (str value)]
+                      (if fraction
+                        (str text (apply str (repeat (- fraction
+                                                        (fraction-length text))
+                                                     \space)))
+                        text))
+    :else (trim-max-width value)))
+
+(defn- one-line
+  "`text` with its line breaks and tabs replaced by spaces, to align the
+  columns. Most values have none, and `.indexOf` finds it out several
+  times faster than the regex replacement."
+  [^String text]
+  (if (or (<= 0 (.indexOf text (int \newline)))
+          (<= 0 (.indexOf text (int \return)))
+          (<= 0 (.indexOf text (int \tab))))
+    (s/replace text #"\r\n|[\r\n\t]" " ")
+    text))
 
 (defn print-table
   "Converts a seq of seqs to a textual table. Uses the first seq as the table
@@ -278,13 +392,18 @@
            [single-column-and-row
             cell-value] (when-let [single-cell? (and (= (count rows) 1)
                                                      (= (count (first rows)) 1))]
-                          [single-cell? (ffirst rows)])
+                          [single-cell? (or (ffirst rows) *null-text*)])
+           fractions (when-not (or rotated single-column-and-row)
+                       (number-columns rows))
            [headers rows] (if (or rotated single-column-and-row)
                             ;; Do not restrict column width if result
                             ;; set has only 1 row or 1 column & 1 row.
-                            [headers rows]
+                            [headers
+                             (map (fn [row] (map #(if (nil? %) *null-text* %)
+                                                 row))
+                                  rows)]
                             [(map trim-max-width headers)
-                             (map #(map trim-max-width %) rows)])
+                             (map #(map cell-text % fractions) rows)])
            rn #"(\r\n)|\n|\r"
            nl (System/getProperty "line.separator")
            rows (for [row rows]
@@ -293,10 +412,7 @@
                             ;; In case of only 1 column & 1 row unify
                             ;; newline separators to system line break.
                             (s/replace % rn nl)
-                            (-> %
-                                (s/replace rn " ")
-                                ;; Tabs to spaces to align columns widths.
-                                (s/replace #"\t" " ")))
+                            (one-line %))
                           ;; Do not remove newline separators if result
                           ;; set cell is not a string.
                           %)
@@ -312,21 +428,15 @@
                     (for [col (rotate-table (conj rows headers))]
                       (apply max (map #(string-length (str %)) col))))
            spacers (map #(apply str (repeat % (u? "─" "-"))) widths)
-           ;; TODO: #(str "%" % "d") for numbers
            fmts (if (and rotated (not aob))
                   ;; Remove trailing spaces for data column of single-row
                   ;; result if no outer borders required.
-                  (list (fn [text] (let [width (- (first widths)
-                                                  (cjk-chars-count text))
-                                         pattern (str "%-" width "s")]
-                                     (format pattern text)))
-                        (fn [text] (let [pattern "%s"]
-                                     (format pattern text))))
-                  (map (fn [w]
-                         (fn [text] (let [width (- w (cjk-chars-count text))
-                                          pattern (str "%-" width "s")]
-                                      (format pattern text))))
-                       widths))
+                  (list #(pad % (first widths)) identity)
+                  ;; Numbers to the right, their headers too.
+                  (map (fn [w fraction]
+                         (if fraction #(pad-left % w) #(pad % w)))
+                       widths
+                       (or fractions (repeat nil))))
            fmt-row (fn [leader divider trailer row]
                      (str leader
                           (apply str (interpose

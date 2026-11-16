@@ -63,6 +63,14 @@ a raised `nrepl-sync-request-timeout' shared with all the rest of them."
   :group 'ejc-sql
   :type 'integer)
 
+(defcustom ejc-mcp-config-file "~/.ejc-sql/mcp.edn"
+  "The configuration of the ejc-sql MCP server, which runs only while the
+file exists. It's passed to the nREPL on connect, since the home directory
+of Emacs can differ from the one of Java: on Windows Emacs may take
+`%AppData%' for it, Java always takes `%UserProfile%'."
+  :group 'ejc-sql
+  :type 'file)
+
 (clomacs-defun ejc-get-dependeces-files-list
                get-dependeces-files-list
                :lib-name "ejc-sql"
@@ -76,35 +84,21 @@ a raised `nrepl-sync-request-timeout' shared with all the rest of them."
                :namespace cemerick.pomegranate.aether
                :timeout ejc-dependencies-resolve-timeout)
 
-(defun ejc-connect-to-db (conn-struct)
-  (let* ((jars-to-load
-          (if-let (dependencies (alist-get :dependencies conn-struct))
-              ;; Resolve dependencies and prepare jars paths list to load.
-              (ejc-get-dependeces-files-list dependencies)
-            (let* ((classpath (alist-get :classpath conn-struct))
-                   (dependency-jars (-map
-                                     (lambda (jar-path)
-                                       ;; Nothing to resolve for a jar file
-                                       ;; outside of `~/.m2/repository', it is
-                                       ;; added to the classpath as is below.
-                                       (when-let ((artifact
-                                                   (ejc-path-to-lein-artifact
-                                                    jar-path)))
-                                         (ejc-get-dependeces-files-list
-                                          artifact)))
-                                     classpath)))
-              ;; Join jar files paths from `:classpath' vector of
-              ;; `ejc-create-connection' and dependencies for this jars.
-              (delq nil
-                    (delete-dups
-                     (append
-                      (-flatten dependency-jars)
-                      (append classpath nil))))))))
-    (-each jars-to-load 'ejc-add-classpath))
-  (when-let ((classname (alist-get :classname conn-struct)))
-    (ejc-class-for-name classname)
-    (ejc-import (read classname)))
-  (ejc-sql-set-db conn-struct))
+(clomacs-defun ejc-load-driver
+               load-driver!
+               :lib-name "ejc-sql"
+               :namespace ejc-sql.deps-resolver
+               :timeout ejc-dependencies-resolve-timeout
+               :doc "Load the JDBC driver of a connection: its jar files
+resolved from `:dependencies' or `:classpath' and its `:classname'.")
+
+(defun ejc-connect-to-db (conn-struct &optional connection-name)
+  "Load the JDBC driver of CONN-STRUCT and make it the current database.
+CONNECTION-NAME, the name of the connection, makes it available to the
+ejc-sql MCP server too."
+  (ejc-load-driver conn-struct)
+  (ejc-sql-set-db conn-struct connection-name
+                  (expand-file-name ejc-mcp-config-file)))
 
 (clomacs-defun ejc--eval-sql-and-log-print
                eval-sql-and-log-print
@@ -219,6 +213,14 @@ a raised `nrepl-sync-request-timeout' shared with all the rest of them."
                :lib-name "ejc-sql"
                :namespace ejc-sql.output
                :doc "Set using unicode for grid borders.")
+
+(clomacs-defun ejc-set-log-queries
+               set-log-queries
+               :lib-name "ejc-sql"
+               :namespace ejc-sql.output
+               :doc (concat "Turn the query log on, or off with nil.\n"
+                            "Off, the queries of the agents are not logged "
+                            "either."))
 
 (clomacs-defun ejc-get-stucture
                get-stucture

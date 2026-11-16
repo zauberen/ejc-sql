@@ -5,7 +5,7 @@
 ;; Author: Kostafey <kostafey@gmail.com>
 ;; URL: https://github.com/kostafey/ejc-sql
 ;; Keywords: sql, jdbc
-;; Version: 0.4.2
+;; Version: 0.6.0
 ;; Package-Requires: ((emacs "30.2")(clomacs "0.0.6")(dash "2.16.0")(spinner "1.7.3"))
 
 ;; This file is not part of GNU Emacs.
@@ -292,12 +292,15 @@ results. When nil, otherwise, provide `ejc-sql' users expected behaviour."
                                  classpath
                                  separator
                                  sslmode
+                                 description
                                  ;; ----------
                                  ;; Optional:
                                  classname)
   "Add new connection configuration named CONNECTION-NAME.
 It adds new connection to `ejc-connections' list or replace existing with the
 same CONNECTION-NAME.
+DESCRIPTION, a free text, tells the AI agents of the ejc-sql MCP server what
+the database is, e.g. where a tunnel to 127.0.0.1 leads.
 For more details about parameters see `get-connection' function in jdbc.clj:
 `https://github.com/clojure/java.jdbc/blob/master/src/main/clojure/clojure/java/jdbc.clj'"
   (setq ejc-connections
@@ -326,6 +329,7 @@ For more details about parameters see `get-connection' function in jdbc.clj:
                                    (vector (file-truename classpath)))))
                          (cons :separator separator)
                          (cons :sslmode sslmode)
+                         (cons :description description)
                          (cons :classname classname))
                         (lambda (arg)
                           (if (cdr arg)
@@ -425,7 +429,7 @@ Return nil if PARAMS has no `:ejc-sql' header argument."
                      (user-error "Run M-x ejc-connect first!"))))
       (unless (eq repl (alist-get name ejc-org-loaded-connections
                                   nil nil #'equal))
-        (ejc-connect-to-db db)
+        (ejc-connect-to-db db name)
         (setf (alist-get name ejc-org-loaded-connections nil nil #'equal)
               repl))
       (cons name db))))
@@ -639,7 +643,7 @@ Apropriate artifacts list located in `ejc-jdbc-drivers'."
         (message "Connection started...")
         (clomacs-with-nrepl "ejc-sql"
           (lambda (db connection-name)
-            (ejc-connect-to-db db)
+            (ejc-connect-to-db db connection-name)
             (let ((validation-result
                    (ejc-validate-connection
                     :db db
@@ -932,9 +936,14 @@ Buffer can be saved to file with `ejc-temp-editor-file' path."
         (get-buffer tmp-buffer-name)))))
 
 (defun ejc-open-log ()
+  "Open the query log of the last day queries were run on."
   (interactive)
-  (find-file-read-only (ejc-get-log-file-path))
-  (goto-char (point-max)))
+  (let ((path (ejc-get-log-file-path)))
+    (if (file-regular-p path)
+        (progn
+          (find-file-read-only path)
+          (goto-char (point-max)))
+      (message "No queries logged yet, the log will be in %s" path))))
 
 ;;;###autoload
 (defun ejc-version ()

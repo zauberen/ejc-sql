@@ -16,28 +16,44 @@
 (require 'ejc-sql)
 (require 'ejc-autocomplete)
 
-(defun ejc-test:run-maven-dependency-plugin ()
-  (print "Run maven-dependency-plugin")
-  (print
-   (shell-command-to-string
-    (concat
-     "mvn org.apache.maven.plugins:maven-dependency-plugin:2.10:get "
-     "-Dartifact=com.h2database:h2:1.4.192"))))
+(defun ejc-test:h2-jar ()
+  "The H2 jar the tests connect with, in the local Maven repository."
+  (expand-file-name "repository/com/h2database/h2/2.5.252/h2-2.5.252.jar"
+                    (ejc-test:get-m2-path)))
+
+(defun ejc-test:fetch-h2-jar ()
+  "Fetch the H2 jar with Maven, unless it is in the local repository.
+Tell why if it can't, the tests needing it fail then."
+  (let ((jar (ejc-test:h2-jar)))
+    (unless (file-exists-p jar)
+      (print "Run maven-dependency-plugin")
+      (if (not (executable-find "mvn"))
+          (message "No mvn to fetch %s" jar)
+        (with-temp-buffer
+          (let ((status (call-process-shell-command
+                         (concat
+                          "mvn org.apache.maven.plugins:"
+                          "maven-dependency-plugin:2.10:get "
+                          "-Dartifact=com.h2database:h2:2.5.252")
+                         nil t)))
+            (print (buffer-string))
+            (cond
+             ((not (eql status 0))
+              (message "mvn failed with %s to fetch %s" status jar))
+             ((not (file-exists-p jar))
+              (message "mvn succeeded, but there is no %s" jar)))))))))
 
 (defun ejc-test:run-lein ()
+  "Run `lein test', print its output, return its exit status."
   (print "Run lein test")
-  (let ((result (shell-command-to-string "lein test")))
-    (print result)
-    result))
+  (with-temp-buffer
+    (let ((status (call-process-shell-command "lein test" nil t)))
+      (print (buffer-string))
+      status)))
 
 (ert-deftest ejc-test:run-lein-test ()
   :tags '(cl)
-  (should
-   (not
-    (equal
-     "Tests failed."
-     (-last (lambda (x) (not (equal "" x)))
-            (s-split "\n" (ejc-test:run-lein)))))))
+  (should (eql 0 (ejc-test:run-lein))))
 
 (ert-deftest ejc-test:ejc-lein-artifact-to-path ()
   :tags '(el)
@@ -59,47 +75,6 @@
   (should
    (equal "~/.m2/repository/com/oracle/jdbc/ojdbc8/12.2.0.1/ojdbc8-12.2.0.1.jar"
           (ejc-lein-artifact-to-path [com.oracle.jdbc/ojdbc8 "12.2.0.1"]))))
-
-(ert-deftest ejc-test:ejc-path-to-lein-artifact ()
-  :tags '(el)
-  (should
-   (equal [[org.xerial/sqlite-jdbc "3.23.1"]]
-          (ejc-path-to-lein-artifact
-           "~/.m2/repository/org/xerial/sqlite-jdbc/3.23.1/sqlite-jdbc-3.23.1.jar")))
-  (should
-   (equal [[com.h2database/h2 "1.4.199"]]
-          (ejc-path-to-lein-artifact
-           "~/.m2/repository/com/h2database/h2/1.4.199/h2-1.4.199.jar")))
-  (should
-   (equal [[mysql/mysql-connector-java "5.1.44"]]
-          (ejc-path-to-lein-artifact
-           "~/.m2/repository/mysql/mysql-connector-java/5.1.44/mysql-connector-java-5.1.44.jar")))
-  (should
-   (equal [[postgresql/postgresql "9.3-1102.jdbc41"]]
-          (ejc-path-to-lein-artifact
-           "~/.m2/repository/postgresql/postgresql/9.3-1102.jdbc41/postgresql-9.3-1102.jdbc41.jar")))
-  (should
-   (equal [[com.microsoft.sqlserver/mssql-jdbc "6.2.2.jre8"]]
-          (ejc-path-to-lein-artifact
-           "~/.m2/repository/com/microsoft/sqlserver/mssql-jdbc/6.2.2.jre8/mssql-jdbc-6.2.2.jre8.jar")))
-  (should
-   (equal [[com.oracle.jdbc/ojdbc8 "12.2.0.1"]]
-          (ejc-path-to-lein-artifact
-           "~/.m2/repository/com/oracle/jdbc/ojdbc8/12.2.0.1/ojdbc8-12.2.0.1.jar")))
-  (should
-   (equal [[com.ibm.informix/jdbc "4.50.3"]]
-          (ejc-path-to-lein-artifact
-           "~/.m2/repository/com/ibm/informix/jdbc/4.50.3/jdbc-4.50.3.jar")))
-  ;; There is nothing to derive the coordinates from when the jar file lies
-  ;; outside of the local maven repository, or too shallow inside it.
-  (should
-   (equal nil
-          (ejc-path-to-lein-artifact
-           "/opt/cloudera-jdbc-drivers/lib/2.6.30.1036/ImpalaJDBC42-2.6.30.1036.jar")))
-  (should
-   (equal nil
-          (ejc-path-to-lein-artifact
-           "~/.m2/repository/ojdbc8.jar"))))
 
 (defun ejc-test:get-boundaries (point-position sql)
   (with-temp-buffer
@@ -150,6 +125,51 @@
                                                   "  /  \n"
                                                   "  SELECT * FROM user")))))
 
+(ert-deftest ejc-test:ejc-eldoc-function-org-mode ()
+  :tags '(el)
+  (with-temp-buffer
+    (insert "#+begin_src sql
+"
+            "UPDATE users SET name = 'x' WHERE id = 1
+"
+            "#+end_src
+"
+            "
+"
+            "* TODO Check the result
+"
+            "#+begin_src emacs-lisp
+"
+            "(setq where 1)
+"
+            "#+end_src
+")
+    (org-mode)
+    (cl-letf (((symbol-function 'ejc-buffer-connected-p) #'ignore))
+      (goto-char (point-min))
+      (search-forward "WHERE id")
+      (should (ejc-eldoc-function))
+      ;; Outside of the SQL source block body there is no SQL.
+      (dolist (text '("#+begin_src sql" "#+end_src" "TODO Check" "where 1"))
+        (goto-char (point-min))
+        (search-forward text)
+        (should-not (ejc-eldoc-function)))
+      ;; The other ElDoc functions of the buffer are shown outside of SQL.
+      (add-hook 'eldoc-documentation-functions
+                (lambda (&rest _) (when (looking-at "Check") "other doc"))
+                nil t)
+      (cl-letf (((symbol-function 'eldoc-mode) #'ignore))
+        (ejc-eldoc-setup))
+      (let ((doc (lambda ()
+                   (run-hook-with-args-until-success
+                    'eldoc-documentation-functions #'ignore))))
+        (goto-char (point-min))
+        (search-forward "TODO ")
+        (should (equal "other doc" (funcall doc)))
+        (goto-char (point-min))
+        (search-forward "WHERE id")
+        (should (string-match-p "UPDATE" (funcall doc)))))))
+
 (ert-deftest ejc-test:get-log-file-path ()
   :tags '(el+cl)
   (let ((log-file-path (ejc-get-log-file-path)))
@@ -199,7 +219,7 @@
     (cl-letf (((symbol-function 'clomacs-get-connection)
                (lambda (&rest _) repl))
               ((symbol-function 'ejc-connect-to-db)
-               (lambda (db) (push db loaded))))
+               (lambda (db name) (push (cons name db) loaded))))
       (with-temp-buffer
         (insert "#+begin_src sql :ejc-sql second\nSELECT 1;\n#+end_src\n")
         (org-mode)
@@ -210,7 +230,7 @@
                          (ejc-org-block-connection params)))
           ;; The JDBC driver is loaded only once per nREPL.
           (ejc-org-block-connection params)
-          (should (equal '(((:subprotocol . "sqlite"))) loaded))))
+          (should (equal '(("second" (:subprotocol . "sqlite"))) loaded))))
       (should-not (ejc-org-block-connection '((:results . "replace"))))
       (should-error (ejc-org-block-connection '((:ejc-sql . "third")))
                     :type 'user-error))
@@ -234,14 +254,17 @@
   (with-current-buffer ejc-results-buffer
     (buffer-substring-no-properties (point-max) (point-min))))
 
+(clomacs-defun ejc-test:mcp-connection-names
+               connection-names
+               :lib-name "ejc-sql"
+               :namespace ejc-sql.mcp
+               :return-type :list)
+
 (ert-deftest ejc-test:get-connection ()
   :tags '(el+cl)
   (let* ((db-path (concat "file://" (ejc-test:get-temp-path)
                           "database;AUTO_SERVER=TRUE"))
-         (classpath (vector
-                     (expand-file-name
-                      "repository/com/h2database/h2/1.4.192/h2-1.4.192.jar"
-                      (ejc-test:get-m2-path))))
+         (classpath (vector (ejc-test:h2-jar)))
          (conn (ejc-create-connection
                 "H2-test-connection"
                 :classpath classpath
@@ -249,11 +272,14 @@
                 :subprotocol "h2"
                 :subname db-path
                 :user "a_user"
-                :password "secret")))
+                :password "secret"
+                :description "The database of the ERT tests")))
+    (should (file-exists-p (ejc-test:h2-jar)))
     (should
      (equal
       `("H2-test-connection"
         (:classname . "org.h2.Driver")
+        (:description . "The database of the ERT tests")
         (:classpath . ,classpath)
         (:password . "secret")
         (:user . "a_user")
@@ -276,14 +302,14 @@
       (ejc-test:run-sql
        (concat
         "CREATE TABLE IF NOT EXISTS users (           \n"
-        "  id int(11) NOT NULL AUTO_INCREMENT,        \n"
+        "  id int NOT NULL AUTO_INCREMENT,            \n"
         "  login varchar(45),                         \n"
         "  email varchar(45),                         \n"
         "  first_name varchar(255) NOT NULL,          \n"
         "  last_name varchar(45) NOT NULL,            \n"
-        "  register_date datetime DEFAULT NULL,       \n"
+        "  register_date timestamp DEFAULT NULL,      \n"
         "  PRIMARY KEY (id),                          \n"
-        "  UNIQUE KEY id_UNIQUE (id)                  \n"
+        "  CONSTRAINT id_UNIQUE UNIQUE (id)           \n"
         ")                                            \n")
        "H2-test-connection")))
     ;; -----------
@@ -351,10 +377,23 @@
                    (ejc-ac-setup)
                    (insert "SERS.")
                    (auto-complete)
-                   (ejc-get-cached-colomns-list ejc-db "USERS" t)))))))))
+                   (ejc-get-cached-colomns-list ejc-db "USERS" t)))))))
+    ;; ---------------------------------------------------
+    ;; The connection is registered for the MCP server
+    (should (member "H2-test-connection" (ejc-test:mcp-connection-names)))))
 
 
-(ejc-test:run-maven-dependency-plugin)
+(ejc-test:fetch-h2-jar)
+
+;; Keep the queries of the tests off the user's log, as `lein test' does.
+(setenv "JVM_OPTS" (mapconcat #'identity
+                              (delq nil (list (getenv "JVM_OPTS")
+                                              "-Dejc-sql.log-dir=ejc-sql"))
+                              " "))
+
+;; Keep the nREPL of the tests off the user's MCP server and databases.edn.
+(setq ejc-mcp-config-file
+      (expand-file-name "mcp.edn" (make-temp-file "ejc-sql-mcp" t)))
 
 (if noninteractive
     (clomacs-with-nrepl "ejc-sql"

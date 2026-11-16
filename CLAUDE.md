@@ -17,17 +17,20 @@ make elpa                          # cask install - REQUIRED before the first `m
 make test                          # the whole suite (see below)
 lein test                          # Clojure side only, no Emacs needed
 lein test ejc-sql.deps-resolver-test   # a single Clojure namespace
-lein check                         # reflection warnings - not a clean baseline,
-                                   # classpath.clj, lib.clj and output.clj have
-                                   # their own, clj-http's are third-party
+lein check                         # reflection warnings - not a clean baseline:
+                                   # structure.clj, connect.clj, output.clj and
+                                   # classpath.clj have their own; leiningen-core,
+                                   # pomegranate and clj-http's are third-party
+lein uberjar                       # target/ejc-sql.jar, the MCP server without Emacs
 ```
 
 `make test` runs `cask exec emacs --script test/ejc-tests.el`, which starts a
 real nREPL via `clomacs-with-nrepl` and runs every ERT test. It needs `lein`,
-and `mvn` too - the script calls `ejc-test:run-maven-dependency-plugin` to fetch
-the H2 driver first. Unlike `clomacs`, the `test` target here does **not**
-depend on `elpa`, so a fresh clone fails with `Cannot open load file: sesman`
-until `make elpa` is run (CI runs them in that order).
+and `mvn` too unless the H2 driver is in `~/.m2` already - the script calls
+`ejc-test:fetch-h2-jar` to fetch it first, and tells why if it can't; the
+tests connecting to H2 fail then. Unlike `clomacs`, the `test` target here
+does **not** depend on `elpa`, so a fresh clone fails with `Cannot open load
+file: sesman` until `make elpa` is run (CI runs them in that order).
 
 ERT tests are tagged: `el` (pure Emacs Lisp), `cl` (shells out to `lein test`),
 `el+cl` (needs the live nREPL bridge). There is no command line selector - the
@@ -64,27 +67,42 @@ returns immediately; on the Clojure side `eval-sql-and-log-print` runs the query
 in a `future`, writes the formatted table to a *result file*, then calls
 `ejc-complete-query` back in Emacs over the HTTP bridge, which loads that file
 into the results buffer. There is a ring of result files behind
-`ejc-show-prev-result` / `ejc-show-next-result`. The result files and the query
-log land in an `ejc-sql/` directory relative to the JVM working directory
-(gitignored).
+`ejc-show-prev-result` / `ejc-show-next-result`. The result files go to
+`ejc-results-path` (the temporary directory by default), the query log to
+`~/.ejc-sql/log/` (`%AppData%\ejc-sql` on Windows). `lein test` and the ERT
+suite set the `ejc-sql.log-dir` system property, so their queries are logged
+to the gitignored `ejc-sql/` of the repository instead.
 
 **Connections.** `ejc-create-connection` normalizes its arguments into an alist
 in `ejc-connections`; `:classpath` is always stored as a vector of
-`file-truename`d paths. `ejc-connect-to-db` turns that into a classpath: with
-`:dependencies` it resolves Leiningen coordinates through
-`src/ejc_sql/deps_resolver.clj` (Pomegranate/Aether, one `resolve-dependencies`
-call, remote repositories involved), with `:classpath` it derives coordinates
-from the `~/.m2/repository` layout via `ejc-path-to-lein-artifact` and resolves
-those. A jar outside `~/.m2` has no derivable coordinates, so it is added to the
-classpath as is. Dependency resolution is the only request that can hit the
-network, hence its own `ejc-dependencies-resolve-timeout` instead of the global
+`file-truename`d paths. `ejc-connect-to-db` hands it to `deps-resolver/load-driver!`
+(`src/ejc_sql/deps_resolver.clj`), which turns it into a classpath: with
+`:dependencies` it resolves Leiningen coordinates (Pomegranate/Aether, one
+`resolve-dependencies` call, remote repositories involved), with `:classpath`
+it derives coordinates from the `~/.m2/repository` layout via
+`path-to-artifact` and resolves those. A jar outside `~/.m2` has no derivable
+coordinates, so it is added to the classpath as is. Dependency resolution is
+the only request that can hit the network, hence its own
+`ejc-dependencies-resolve-timeout` instead of the global
 `nrepl-sync-request-timeout`.
+
+The jars are added to the hierarchy of `Compiler/LOADER`, and that only works
+when `clojure.java.jdbc` was loaded below that class loader: `DriverManager`
+hands a driver only to the code whose class loader can load the driver class,
+and answers "No suitable driver" otherwise. In the nREPL that is the session
+loader `Compiler/LOADER` is bound to; in a thread without a binding - the HTTP
+server's, a `future` started there - `classpath/add-classpath` binds a new root
+nobody was loaded below. Hence `mcp/remember-class-loader!`, and hence
+`ejc-sql.main` binds the root before anything else is loaded and is the only
+namespace compiled ahead of time: AOT classes belong to the application class
+loader, above the root. `test/ejc_sql/main_test.clj` runs it in a JVM of its
+own, without the H2 jar on the classpath, to check this.
 
 **Database metadata is per-vendor.** `src/ejc_sql/structure.clj` holds a map of
 SQL snippets per database type (`:oracle`, `:postgresql`, `:mysql`, `:sqlserver`,
 `:informix`, `:h2`, `:sqlite`), selected by `select-db-meta-script` and keyed by
 what is being asked for (`:tables`, `:columns`, `:procedures`, `:constraints`,
-…). Adding support for a database means adding entries to those maps, not
+...). Adding support for a database means adding entries to those maps, not
 writing new code paths. Results are memoized in `src/ejc_sql/cache.clj`, which is
 what `ejc-print-cache` and `ejc-invalidate-cache` operate on; the cache lives in
 memory only and is lost with the nREPL.
@@ -97,6 +115,29 @@ keeps a background, idle-timer-driven cache so typing never waits on the
 database - column candidates are the exception, since they depend on the SQL
 expression around point. `ejc-eldoc.el` reuses the same metadata for signatures.
 
+**The MCP server** for AI agents lives in the same JVM: `src/ejc_sql/mcp.clj`
+(the connections, `~/.ejc-sql/mcp.edn`, the tools, a pure JSON-RPC
+dispatcher) and `src/ejc_sql/mcp_http.clj` (Streamable HTTP on `127.0.0.1`
+over the JDK `HttpServer`, both the `2026-07-28` and the older MCP revisions).
+`connect/set-db` gets the Emacs connection name from `ejc-connect-to-db`,
+registers the connection and starts the server when `mcp.edn` exists, through
+`requiring-resolve`, since `mcp` requires `connect`. The agents see these
+connections merged over the ones of `databases.edn` next to `mcp.edn`, written
+by the user and never by ejc-sql, re-read when its size or modification time
+changes, its drivers loaded in the background (`mcp/file-connections`).
+Without Emacs `ejc-sql.main` runs the server with the connections of the file
+only (`mcp-http/run-standalone`). The tests point `mcp/config-file` to a
+temporary directory and write `databases.edn` there by its explicit path: a
+test run outside its fixture would otherwise write the user's one. The MCP path opens a
+connection of its own per call and never writes `connect/db` or
+`connect/current-query`, so an agent's query and `ejc-cancel-query` never meet.
+It doesn't call Emacs either, but for one message on the server start: agent
+results don't go to the results ring. `mcp/render-rows` prepares the result
+sets for the agent: line breaks escaped, dates never cut; `o/print-table`
+draws them with no outside borders, so a single row as a line per column,
+nil as `o/*null-text*`, NULL there. All the tools print with
+`o/*ascii-borders*` bound.
+
 **Output formatting** is Clojure-side (`src/ejc_sql/output.clj`, plain-text
 tables with optional unicode borders and column width limits, tuned by the
 `ejc-set-*` commands on `ejc-sql-connected-hook`). The Emacs side only displays
@@ -108,7 +149,7 @@ it, in `ejc-result-mode` or `orgtbl-mode` according to `ejc-result-table-impl`.
 - Commit subjects that address an issue are prefixed `[#NNN]`.
 - Releases are annotated tags `vX.Y.Z`. The version is written in three places
   and they are bumped together: `;; Version:` in `ejc-sql.el`, `defproject` in
-  `project.clj` (as `-SNAPSHOT`) and two `[ejc-sql "…-SNAPSHOT"]` references in
-  `README.md`.
+  `project.clj` (as `-SNAPSHOT`) and two `[ejc-sql "...-SNAPSHOT"]` references
+  in `README.md`.
 - `README.md` carries a hand-maintained table of contents; a new heading needs
   an entry there.

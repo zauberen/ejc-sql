@@ -1,4 +1,4 @@
-(defproject ejc-sql "0.4.2-SNAPSHOT"
+(defproject ejc-sql "0.6.0-SNAPSHOT"
   :description "Interact with database via java/clojure libs to run SQL scripts"
   :url "https://github.com/kostafey/ejc-sql"
   :license {:name "GPL 2.0+"
@@ -10,4 +10,13 @@
                  [leiningen-core "2.9.3"]
                  [org.apache.commons/commons-lang3 "3.5"]
                  [org.apache.httpcomponents/httpclient "4.5.5"]
-                 [clomacs "0.0.6-SNAPSHOT"]])
+                 [clomacs "0.0.6-SNAPSHOT"]
+                 [org.clojure/data.json "2.5.2"]]
+  :uberjar-name "ejc-sql.jar"
+  :profiles {:test {:dependencies [[com.h2database/h2 "2.5.252"]]
+                    ;; Keep the queries of the tests off the user's log.
+                    :jvm-opts ["-Dejc-sql.log-dir=ejc-sql"]}
+             ;; The MCP server without Emacs. Nothing but `ejc-sql.main` may
+             ;; be compiled ahead of time, see its `-main`.
+             :uberjar {:aot [ejc-sql.main]
+                       :main ejc-sql.main}})
