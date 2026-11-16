@@ -280,6 +280,24 @@
                   FROM information_schema.schemata AS s,
                        information_schema.tables AS t
                   WHERE t.table_schema = s.schema_name ")
+         ;; Tables and views of the databases other than the current one
+         ;; (`USE db`, or the one in the connection URL) are qualified by
+         ;; their database name: `other_db.table`.  When there is no
+         ;; current database, `DATABASE()` is NULL, so all of them are.
+         :qualified-tables (fn [& _] "
+                  SELECT CASE WHEN table_schema = DATABASE()
+                              THEN table_name
+                              ELSE CONCAT(table_schema, '.', table_name)
+                         END
+                  FROM information_schema.tables
+                  ORDER BY table_schema <> DATABASE(), 1 ")
+         :qualified-views (fn [& _] "
+                  SELECT CASE WHEN table_schema = DATABASE()
+                              THEN table_name
+                              ELSE CONCAT(table_schema, '.', table_name)
+                         END
+                  FROM information_schema.views
+                  ORDER BY table_schema <> DATABASE(), 1 ")
          :columns (default-queries :columns)
          :keywords (fn [& _] "
                   SELECT name FROM mysql.help_keyword")
@@ -714,6 +732,28 @@
                          :sql (select-db-meta-script db :views :owner owner)
                          :force? force?)))
 
+(defn qualified-meta-type
+  "Return the `queries` key listing `meta-type` (`:tables` or `:views`) of
+  all the databases/schemas, qualified by the database/schema name unless
+  it is the current one, or nil if this database type has no such query."
+  [db meta-type]
+  (let [qualified (keyword (str "qualified-" (name meta-type)))]
+    (when (get-in queries [(get-db-type db) qualified])
+      qualified)))
+
+(defn get-qualified
+  "Return the `meta-type` (`:tables` or `:views`) list of all the
+  databases/schemas, where the entities outside the current one are
+  qualified by their database/schema name, e.g. `other_db.table`.
+  Taken from cache if already received from DB, otherwise start receiving."
+  [db meta-type & [force?]]
+  (let [qualified (qualified-meta-type db meta-type)]
+    (get-or-create-cache :db db
+                         :path [qualified]
+                         :sql (select-db-meta-script db qualified)
+                         :force? force?
+                         :filter-fn #(not (nil? %)))))
+
 (defn get-colomns
   "Return colomns list for this table from cache if already received from DB,
   check if receiveing process is not running, then start it."
@@ -861,7 +901,10 @@
   [& {:keys [db sql prefix-1 buffer-name point]}]
   (let [tables (if (not prefix-1)
                  ;; something#
-                 (get-tables db)
+                 (if (qualified-meta-type db :tables)
+                   ;; table, other_db.table
+                   (get-qualified db :tables)
+                   (get-tables db))
                  (if (is-owner? db prefix-1)
                    ;; [owner].#<tables-list>
                    (get-tables db prefix-1)
@@ -878,7 +921,10 @@
   [& {:keys [db sql prefix-1 buffer-name point]}]
   (if-let [views (if (not prefix-1)
                  ;; something#
-                 (get-views db)
+                 (if (qualified-meta-type db :views)
+                   ;; view, other_db.view
+                   (get-qualified db :views)
+                   (get-views db))
                  (if (is-owner? db prefix-1)
                    ;; [owner].#<views-list>
                    (get-views db prefix-1)

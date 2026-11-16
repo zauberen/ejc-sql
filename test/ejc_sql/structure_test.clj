@@ -87,6 +87,31 @@
                                       :sql sql
                                       :prefix-1 "a"))))))))
 
+(deftest get-tables-candidates-qualified-test
+  (testing "Tables outside the current database are qualified by its name."
+    (with-redefs-fn {#'get-db-type (fn [db] :mariadb)
+                     #'get-db-name (fn [db] "mydb")
+                     #'get-or-create-cache
+                     (fn [& {:keys [path sql]}]
+                       (is (= [:qualified-tables] path))
+                       (is (re-find #"DATABASE\(\)" sql))
+                       '("users" "other_db.orders"))}
+      #(is (= '("nil" "users" "other_db.orders")
+              (get-tables-candidates :db nil :sql "SELECT * FROM "))))
+    (with-redefs-fn {#'get-db-type (fn [db] :mysql)
+                     #'get-db-name (fn [db] "mydb")
+                     #'get-or-create-cache
+                     (fn [& {:keys [path]}]
+                       (is (= [:qualified-views] path))
+                       '("v_users" "other_db.v_orders"))}
+      #(is (= '("nil" "v_users" "other_db.v_orders")
+              (get-views-candidates :db nil :sql "SELECT * FROM ")))))
+  (testing "Databases without qualified queries keep the plain list."
+    (with-redefs-fn {#'get-db-type (fn [db] :h2)
+                     #'get-tables (fn [db & _] '("users"))}
+      #(is (= '("nil" "users")
+              (get-tables-candidates :db nil :sql "SELECT * FROM "))))))
+
 (deftest check-if-insert-sql-test
   (testing "insert-sql? fn test."
     (is (= "product"
